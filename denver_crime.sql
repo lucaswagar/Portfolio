@@ -1,0 +1,279 @@
+-- Denver Crime Statistics 2016-2021
+-- https://www.denvergov.org/opendata/dataset/city-and-county-of-denver-crime
+
+SELECT
+	*
+FROM
+	portfolio.denver_crime
+
+-- Checking for duplicates
+SELECT
+	INCIDENT_ID,
+	COUNT(INCIDENT_ID)
+	REPORTED_DATE,
+	OFFENSE_CODE,
+	OFFENSE_CODE_EXTENSION,
+	OFFENSE_TYPE_ID,
+	OFFENSE_CATEGORY_ID,
+	INCIDENT_ADDRESS
+FROM
+	portfolio.denver_crime
+GROUP BY
+	INCIDENT_ID,
+	REPORTED_DATE,
+	OFFENSE_CODE,
+	OFFENSE_CODE_EXTENSION,
+	OFFENSE_TYPE_ID,
+	OFFENSE_CATEGORY_ID,
+	INCIDENT_ADDRESS
+HAVING
+	COUNT(INCIDENT_ID) > 1
+
+
+-- Add missing NEIGHBORHOOD_ID to INCIDENT_ID 20208052103
+
+UPDATE portfolio.denver_crime
+SET NEIGHBORHOOD_ID = 'dia'
+WHERE INCIDENT_ID = '20208052103'
+
+
+-- Standardizing REPORTED_DATE
+
+SELECT
+	REPORTED_DATE,
+	STR_TO_DATE(SUBSTRING_INDEX(REPORTED_DATE, ' ', 1), '%m/%e/%y') AS NEW_DATE
+FROM
+	portfolio.denver_crime;
+
+
+ALTER TABLE portfolio.denver_crime
+	ADD COLUMN REPORTED_DATE_ONLY VARCHAR(255);
+
+
+UPDATE
+	portfolio.denver_crime
+SET
+	REPORTED_DATE_ONLY = STR_TO_DATE(SUBSTRING_INDEX(REPORTED_DATE, ' ', 1), '%m/%e/%y');
+
+
+-- Extract year, month, and time into individual columns
+
+SELECT
+	REPORTED_DATE_ONLY,
+	SUBSTRING_INDEX(REPORTED_DATE, ' ', - 1) AS REPORTED_TIME,
+	SUBSTRING_INDEX(REPORTED_DATE_ONLY, '-', 1) AS REPORTED_YEAR,
+	SUBSTRING_INDEX(SUBSTRING_INDEX(REPORTED_DATE_ONLY, '-', 2), '-', - 1) AS REPORTED_MONTH
+FROM
+	portfolio.denver_crime;
+
+
+ALTER TABLE portfolio.denver_crime
+    ADD COLUMN REPORTED_TIME VARCHAR(255),
+	ADD COLUMN REPORTED_YEAR VARCHAR(255),
+	ADD COLUMN REPORTED_MONTH VARCHAR(255);
+
+
+UPDATE
+	portfolio.denver_crime
+SET
+	REPORTED_TIME = SUBSTRING_INDEX(REPORTED_DATE, ' ', - 1),
+	REPORTED_YEAR = SUBSTRING_INDEX(REPORTED_DATE_ONLY, '-', 1),
+	REPORTED_MONTH = SUBSTRING_INDEX(SUBSTRING_INDEX(REPORTED_DATE_ONLY, '-', 2), '-', - 1);
+
+
+
+-- Top 5 neighborhoods per year with most crimes excluding traffic accident
+
+WITH order_year AS (
+	SELECT
+		REPORTED_YEAR,
+		NEIGHBORHOOD_ID,
+		COUNT(INCIDENT_ID) AS NUMBER_CRIMES,
+		RANK() OVER (PARTITION BY REPORTED_YEAR ORDER BY COUNT(INCIDENT_ID)
+			DESC) AS YEAR_RANK
+	FROM
+		portfolio.denver_crime
+	WHERE
+		OFFENSE_CATEGORY_ID <> 'traffic-accident'
+	GROUP BY
+		REPORTED_YEAR,
+		NEIGHBORHOOD_ID ORDER BY
+			REPORTED_YEAR DESC,
+			NUMBER_CRIMES DESC
+)
+SELECT
+	*
+FROM
+	order_year
+WHERE
+	YEAR_RANK <= 5;
+
+
+-- Top 5 neighborhoods with highest total crime excluding traffic-accident
+
+WITH order_nh AS (
+	SELECT
+		NEIGHBORHOOD_ID,
+		COUNT(INCIDENT_ID) AS NUMBER_CRIMES,
+		RANK() OVER (ORDER BY COUNT(INCIDENT_ID)
+			DESC) AS NH_RANK
+	FROM
+		portfolio.denver_crime
+	WHERE
+		OFFENSE_CATEGORY_ID <> 'traffic-accident'
+	GROUP BY
+		NEIGHBORHOOD_ID 
+	ORDER BY
+		NUMBER_CRIMES DESC
+)
+SELECT
+	*
+FROM
+	order_nh
+WHERE
+	NH_RANK <= 5;
+	
+	
+-- Top 5 neighborhoods with highest crime in each offense category
+
+WITH order_cat AS (
+	SELECT
+	    OFFENSE_CATEGORY_ID,
+	    NEIGHBORHOOD_ID,
+		COUNT(INCIDENT_ID) AS NUMBER_CRIMES,
+		RANK() OVER (PARTITION BY OFFENSE_CATEGORY_ID ORDER BY COUNT(INCIDENT_ID)
+			DESC) AS NH_RANK
+	FROM
+		portfolio.denver_crime
+	GROUP BY
+	    NEIGHBORHOOD_ID,
+		OFFENSE_CATEGORY_ID 
+	ORDER BY
+	        OFFENSE_CATEGORY_ID,
+			NUMBER_CRIMES DESC
+)
+SELECT
+	*
+FROM
+	order_cat
+WHERE
+	NH_RANK <= 5;
+
+-- Number of violent crimes and time of day that violent crimes occur broken down by OFFENSE_CATEGORY_ID
+-- 'Morning' = 5:00am - 11:59am 
+-- 'Afternoon' = 12:00pm - 4:59pm 
+-- 'Evening' = 5:00pm - 9:59pm 
+-- 'Night' = 10:00pm - 5:00am
+
+WITH tod AS (
+	SELECT
+		INCIDENT_ID,
+		OFFENSE_CATEGORY_ID,
+		CASE WHEN SUBSTRING_INDEX(REPORTED_TIME, ':', 1) >= 5
+			AND SUBSTRING_INDEX(REPORTED_TIME, ':', 1) < 12 THEN 'Morning'
+		WHEN SUBSTRING_INDEX(REPORTED_TIME, ':', 1) >= 12
+			AND SUBSTRING_INDEX(REPORTED_TIME, ':', 1) < 17 THEN 'Afternoon'
+		WHEN SUBSTRING_INDEX(REPORTED_TIME, ':', 1) >= 17
+			AND SUBSTRING_INDEX(REPORTED_TIME, ':', 1) < 22 THEN 'Evening'
+		ELSE 'Night'
+		END AS TIME_OF_DAY
+	FROM
+		portfolio.denver_crime
+)
+SELECT
+	COUNT(INCIDENT_ID) AS NUMBER_CRIMES,
+	OFFENSE_CATEGORY_ID,
+	TIME_OF_DAY
+FROM
+	tod
+WHERE
+	OFFENSE_CATEGORY_ID = 'aggravated-assault'
+	OR OFFENSE_CATEGORY_ID = 'arson'
+	OR OFFENSE_CATEGORY_ID = 'auto-theft'
+	OR OFFENSE_CATEGORY_ID = 'burglary'
+	OR OFFENSE_CATEGORY_ID = 'murder'
+	OR OFFENSE_CATEGORY_ID = 'robbery'
+	OR OFFENSE_CATEGORY_ID = 'sexual-assault'
+GROUP BY
+	OFFENSE_CATEGORY_ID,
+	time_of_day
+ORDER BY
+	OFFENSE_CATEGORY_ID ASC,
+	NUMBER_CRIMES DESC
+
+
+-- Number of crimes and time of day that non-violent crimes occur broken down by OFFENSE_CATEGORY_ID
+-- 'Morning' = 5:00am - 11:59am 
+-- 'Afternoon' = 12:00pm - 4:59pm 
+-- 'Evening' = 5:00pm - 9:59pm 
+-- 'Night' = 10:00pm - 5:00am
+
+WITH tod AS (
+	SELECT
+		INCIDENT_ID,
+		OFFENSE_CATEGORY_ID,
+		CASE WHEN SUBSTRING_INDEX(REPORTED_TIME, ':', 1) >= 5
+			AND SUBSTRING_INDEX(REPORTED_TIME, ':', 1) < 12 THEN 'Morning'
+		WHEN SUBSTRING_INDEX(REPORTED_TIME, ':', 1) >= 12
+			AND SUBSTRING_INDEX(REPORTED_TIME, ':', 1) < 17 THEN 'Afternoon'
+		WHEN SUBSTRING_INDEX(REPORTED_TIME, ':', 1) >= 17
+			AND SUBSTRING_INDEX(REPORTED_TIME, ':', 1) < 22 THEN 'Evening'
+		ELSE 'Night'
+		END AS TIME_OF_DAY
+	FROM
+		portfolio.denver_crime
+)
+SELECT
+	COUNT(INCIDENT_ID) AS NUMBER_CRIMES,
+	OFFENSE_CATEGORY_ID,
+	TIME_OF_DAY
+FROM
+	tod
+WHERE
+	OFFENSE_CATEGORY_ID <> 'aggravated-assault'
+	AND OFFENSE_CATEGORY_ID <> 'arson'
+	AND OFFENSE_CATEGORY_ID <> 'auto-theft'
+	AND OFFENSE_CATEGORY_ID <> 'burglary'
+	AND OFFENSE_CATEGORY_ID <> 'murder'
+	AND OFFENSE_CATEGORY_ID <> 'robbery'
+	AND OFFENSE_CATEGORY_ID <> 'sexual-assault'
+GROUP BY
+	OFFENSE_CATEGORY_ID,
+	time_of_day
+ORDER BY
+	OFFENSE_CATEGORY_ID ASC,
+	NUMBER_CRIMES DESC;
+	
+-- Creating Tableau viz
+
+-- Crimes by date, time, neighborhood, and category
+
+SELECT
+	REPORTED_DATE_ONLY,
+	CAST(SUBSTRING_INDEX(REPORTED_TIME, ':', 1) AS UNSIGNED) AS REPORTED_HOUR,
+	OFFENSE_CATEGORY_ID,
+	NEIGHBORHOOD_ID,
+	COUNT(INCIDENT_ID) AS CASES
+FROM
+	portfolio.denver_crime
+GROUP BY
+	REPORTED_DATE_ONLY,
+	REPORTED_HOUR,
+	OFFENSE_CATEGORY_ID,
+	NEIGHBORHOOD_ID
+ORDER BY
+	REPORTED_DATE_ONLY;
+	
+	
+
+-- Map of crime
+
+SELECT
+	GEO_LAT,
+	GEO_LON,
+	INCIDENT_ID,
+	OFFENSE_CATEGORY_ID,
+	NEIGHBORHOOD_ID
+FROM
+	portfolio.denver_crime;
+
